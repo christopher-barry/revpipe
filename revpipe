@@ -32,7 +32,7 @@ until [[ ${conn} ]] || [[ ${tries} -gt 5 ]]; do
     }
 done
 
-[[ ${tries} -gt 10 ]] || [[ ! "${conn}" ]] && {
+[[ ${tries} -gt 5 ]] || [[ ! "${conn}" ]] && {
     logger -t revpipe "reverse tunnel is down. restarting..."
     conn_pid=$(ps ax | grep localhost:${PORT} | grep -v grep | head -n1 | awk '{ print $1 }')
     [[ ${conn_pid} ]] && kill ${conn_pid}
