@@ -1,18 +1,20 @@
 #!/bin/bash
 # generic README generator from DOC delimited comment heredoc
 #
+[[ $# -ne 1 ]] && { echo >&2 "${0} <scriptfile>"; exit 1; }
+
 declare found=
 >README
-while read line; do
+while IFS= read line; do
     [[ ${found} ]] || {
         [[ "${line}" =~ ^\:\<\<DOC$ ]] && found=true
     }
     case ${found} in
         true)
             [[ "${line}" =~ ^(\:\<\<DOC|DOC)$ ]] && continue
-            echo "${line}" >> README
+            printf '%s\n' "${line}" >> README
             ;;
         *) continue ;;
     esac
-done < ${1}
+done < <(cat ${1})
 
