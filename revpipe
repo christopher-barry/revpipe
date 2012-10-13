@@ -1,0 +1,157 @@
+#!/bin/bash
+# revpipe: test on a cron, and reconnect reverse ssh tunnel as required.
+# author: christopher.r.barry-at-gmaildotcom
+# Copyright 2012
+
+#-------------------------------------------------------------------------------
+#                         C O N F I G U R A T I O N
+#-------------------------------------------------------------------------------
+# Your home's external ip address (or DNS name if you have one).
+HOME_ADDR=my.homepc.com
+
+# The port on your box at home to connect back to work through.
+# This default is likely fine to use.
+PORT=2222
+
+# That's it.
+
+
+#-------------------------------------------------------------------------------
+#                        P R O G R A M   B E G I N S
+#-------------------------------------------------------------------------------
+[[ "$(id -u)" == 0 ]] || { echo "you must be root"; exit 1; }
+[[ $(which logger) ]] || logger() { echo "$(date) ${@:1:1}: ${@:2}" >>/var/log/revpipe.log; }
+
+tries=1
+until [[ ${conn} ]] || [[ ${tries} -gt 5 ]]; do
+    conn="$(ssh ${HOME_ADDR} "netstat -ln --inet|grep '127.0.0.1:${PORT}'")"
+    [[ ${conn} ]] || {
+        logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection..."
+        tries=$((${tries}+1))
+        sleep 5
+    }
+done
+
+[[ ${tries} -gt 10 ]] || [[ ! "${conn}" ]] && {
+    logger -t revpipe "reverse tunnel is down. restarting..."
+    conn_pid=$(ps ax | grep localhost:${PORT} | grep -v grep | head -n1 | awk '{ print $1 }')
+    [[ ${conn_pid} ]] && kill ${conn_pid}
+    ssh -fgNTR localhost:${PORT}:localhost:22 root@${HOME_ADDR} && {
+        logger -t revpipe "reverse tunnel activated"
+    } || {
+        logger -t revpipe "restarting reverse tunnel failed"
+    }
+}
+#-------------------------------------------------------------------------------
+
+:<<DOC
+
+This script establishes and maintains an ssh reverse ssh tunnel
+connection from one location to another.
+
+Problem:
+ Your work box sits behind a NAT in the office, and you want/need to
+ access it from home whenever you need to via ssh or scp.
+
+Solution:
+ This script will generate a reverse ssh tunnel from work to home
+ and make sure it stays up, re-establishing it whenever it drops.
+
+
+Setup @ work
+---------------------------------------------------------------------
+ Make sure this script (revpipe) is executable.
+
+ There are two configuration settings you MUST set in the revpipe
+ script itself.
+
+  youasroot@work emacs ~/bin/revpipe
+
+ Set HOME_ADDR and PORT variables as appropriate.
+
+  Here's a handy one-liner to run from a pc (e.g. your home desktop)
+  to get your current external IP address:
+
+  $ wget http://automation.whatismyip.com/n09230945.asp -O - -o /dev/null
+
+  Save the line above to ~/bin/getip, and chmod it to 755.
+  Then you can use 'getip' whenever you need to grab your ip.
+
+
+ In order for your tunnel to work, you'll need to be able to ssh
+ into your home pc as root, from work as root, as in:
+
+  youasroot@work~# ssh root@your_house
+
+ without a password, using ssh keys from work into your home pc.
+
+ To get your keys setup:
+  youasroot@work~# ssh-copy-id -i <pubkeyfile> root@your_house
+ where <pubkeyfile> is typically either of:
+ ~/.ssh/id_dsa.pub or ~/.ssh/id_rsa.pub
+
+ Note:
+ revpipe must be run as root on your work box, and should be run
+ from root's crontab like so:
+
+ # crontab example to restart tunnel
+ MAILTO=''
+ #m    h dom mon dow  command
+ @reboot             /path/to/revpipe 2>&1 >/dev/null
+ */5  *  *   *   *   /path/to/revpipe 2>&1 >/dev/null
+
+  youasroot@work~# crontab -e
+
+ Use above command to edit root's crontab.
+
+ The crontab above  will check the connection on reboot, and
+ every 5 minutes thereafter while your work box is running.
+ If the test fails 5 times, it will recreate the tunnel.
+
+
+Setup @ home
+---------------------------------------------------------------------
+ To get to your desktop at home, you'll need to configure your home
+ router to forward incoming ssh (port 22) to your box inside, and
+ make sure sshd is running on your box, and that you can ssh in as
+ root. (/etc/ssh/sshd_config)
+
+ PermitRootLogin yes
+
+ It's a VERY good idea, AFTER you have keys working from work to
+ DISABLE password authentication in /etc/ssh/sshd_config on your
+ home desktop, as in:
+
+ PasswordAuthentication no
+
+ That way, login can only occur via keys, and that helps reduce
+ your exposure from the internet. You can also adjust your
+ firewall to limit access to only your Work's external ip address.
+
+
+Using the Tunnel
+---------------------------------------------------------------------
+ With this script connected from work to your home pc, accessing your
+ work pc from home is done by ssh-ing to localhost, on the configured
+ port, as in:
+
+  you@home$ ssh -p2222 workyou@localhost
+
+ This will go back through the local reverse tunnel endpoint, which
+ is at localhost:2222, dropping you right onto your work pc. Or, to
+ copy files to your work desktop:
+
+  you@home$ scp -P2222 /my/local/file workyou@localhost:~/Desktop/
+
+ Some other ssh settings to read up on:
+  ServerAliveCountMax
+  ServerAliveInterval
+
+ Use 'apropos ssh' for a list of related ssh manpages. ssh_config is
+ a good manpage to read.
+ If the tunnel is isolated by firewalls by IP addresses, you might
+ consider a less robust tunnel cipher to improve performance, like
+ possibly arcfour. Use root's .ssh_config to modify the cipher for
+ this connection only.
+
+DOC

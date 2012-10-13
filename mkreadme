@@ -1,0 +1,18 @@
+#!/bin/bash
+# generic README generator from DOC delimited comment heredoc
+#
+declare found=
+>README
+while read line; do
+    [[ ${found} ]] || {
+        [[ "${line}" =~ ^\:\<\<DOC$ ]] && found=true
+    }
+    case ${found} in
+        true)
+            [[ "${line}" =~ ^(\:\<\<DOC|DOC)$ ]] && continue
+            echo "${line}" >> README
+            ;;
+        *) continue ;;
+    esac
+done < ${1}
+
