@@ -45,9 +45,9 @@ done
 #-------------------------------------------------------------------------------
 
 :<<DOC
-
-This script establishes and maintains an ssh reverse ssh tunnel
-connection from one location to another.
+Overview:
+ This script establishes and maintains an ssh reverse tunnel connection
+ from one location to another.
 
 Problem:
  Your work box sits behind a NAT in the office, and you want/need to
