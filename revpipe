@@ -24,7 +24,7 @@ PORT=2222
 
 tries=1
 until [[ ${conn} ]] || [[ ${tries} -gt 5 ]]; do
-    conn="$(ssh ${HOME_ADDR} "netstat -ln --inet|grep '127.0.0.1:${PORT}'")"
+    conn="$(ssh -o 'StrictHostKeyChecking no' ${HOME_ADDR} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]]'")"
     [[ ${conn} ]] || {
         logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection..."
         tries=$((${tries}+1))
@@ -36,7 +36,7 @@ done
     logger -t revpipe "reverse tunnel is down. restarting..."
     conn_pid=$(ps ax | grep localhost:${PORT} | grep -v grep | head -n1 | awk '{ print $1 }')
     [[ ${conn_pid} ]] && kill ${conn_pid}
-    ssh -fgNTR localhost:${PORT}:localhost:22 root@${HOME_ADDR} && {
+    ssh -fgNTR -o 'StrictHostKeyChecking no' localhost:${PORT}:localhost:22 root@${HOME_ADDR} && {
         logger -t revpipe "reverse tunnel activated"
     } || {
         logger -t revpipe "restarting reverse tunnel failed"
