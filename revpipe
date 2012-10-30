@@ -2,25 +2,19 @@
 # revpipe: test on a cron, and reconnect reverse ssh tunnel as required.
 # author: christopher.r.barry-at-gmaildotcom
 # Copyright 2012
-
+set -x
 #-------------------------------------------------------------------------------
 #                         C O N F I G U R A T I O N
 #-------------------------------------------------------------------------------
-# Your home's external ip address, or DNS name if you have one.
-HOME_ADDR=my.homepc.com
+# Your home's external ip address (or DNS name if you have one).
+HOME_ADDR=ns.infinux.org
 
 # The port on your box at home to connect back to work through.
 # This default is likely fine to use.
-PORT=2222
-
-# If you've setup ~/.ssh/config as noted in the README, then
-# set the following to the Host name you set in that file.
-# HOST=home-work-tunnel
-
-# max number of tries verifying the remote host
-MAXTRIES=5
+PORT=2233
 
 # That's it.
+
 
 #-------------------------------------------------------------------------------
 #                        P R O G R A M   B E G I N S
@@ -28,98 +22,24 @@ MAXTRIES=5
 [[ "$(id -u)" == 0 ]] || { echo "you must be root"; exit 1; }
 [[ $(which logger) ]] || logger() { echo "$(date) ${@:1:1}: ${@:2}" >>/var/log/revpipe.log; }
 
-#-------------------------------------------------------------------------------
-function _resolve2ip()
-{
-    local _dns_name=${1}
-    local _dns_server=${2}
-    dig ${_dns_server:+@${_dns_server}} +noadditional +noauthority +noquestion ${_dns_name} \
-        | grep -v '^;.*$' | sed '/^$/d' | grep -v 'CNAME' | awk '{ print $5 }' | tail -n1
-}
-
-#-------------------------------------------------------------------------------
-function _get_configured_nameserver()
-{
-    dig localhost | grep SERVER | awk -F\( '{ print $2 }' | tr -d ')'
-}
-
-#-------------------------------------------------------------------------------
-# handle ip changes in public dns
-function _iterate_nameservers()
-{
-    [[ "${HOME_ADDR}" =~ [[:alpha:]] ]] && {
-
-        # we're using a dns name
-        # we'll query a bunch of public dns servers to see if the remote ip has changed.
-        # this can help as the record propagates after changing the ip.
-        local -a nameservers=( $(_get_configured_nameserver) 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 207.225.209.66 )
-        RESOLVED_IPS=()
-        for (( n=0; n < ${#nameservers[@]}; n++ )); do
-            RESOLVED_IPS+=( $(_resolve2ip ${HOME_ADDR} ${nameservers[${n}]}) )
-        done
-
-        RESOLVED_IPS=( $(echo "${RESOLVED_IPS[@]}" | uniq) )
-
-    } || {
-
-        # here we just have an ip configured instead of a dns name.
-        # if it changes on us, we're basically out of luck.
-        RESOLVED_IPS=( ${HOME_ADDR} )
-
-    }
-
-    [[ ${#RESOLVED_IPS[@]} -gt 0 ]] || {
-    logger -t revpipe "unable to connect to '${HOME_ADDR}'"
-    exit 1
-    }
-
-}
-
-#-------------------------------------------------------------------------------
-# test remote connectivity
-_iterate_nameservers
-for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
-    conn=$(ssh root@${RESOLVED_IPS[${i}]} "ls /")
-    [[ ${?} -eq 0 && "${conn}" =~ usr ]] && {
-        RESOLVED_IP=${RESOLVED_IPS[${i}]}
-        ip=${#RESOLVED_IPS[@]}
-    }
-done
-[[ ${RESOLVED_IP} ]] || {
-    logger -t revpipe "unable to connect to '${HOME_ADDR}'"
-    exit 1
-}
-
-#-------------------------------------------------------------------------------
-# see if the tunnel looks up
-tries=1 conn=
-until [[ ${conn} ]] || [[ ${tries} -gt ${MAXTRIES} ]]; do
-    conn="$(ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'")"
-    [[ ${conn} ]] && {
-        # see if we can double back
-        [[ "$(ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} ${RESOLVED_IP} "ssh -p${PORT} localhost \"ls /\"")" =~ usr ]] || {
-            # if not, kill the tunnel client-side
-            ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o \'Host ${HOST}\'} ${RESOLVED_IP} \
-                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")"
-            tries=$((${MAXTRIES} + 1))
-        }
-    } || {
-        logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP}..."
-        tries=$((${tries} + 1))
+tries=1
+until [[ ${conn} ]] || [[ ${tries} -gt 5 ]]; do
+    conn="$(ssh -o 'StrictHostKeyChecking no' ${HOME_ADDR} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]]'")"
+    [[ ${conn} ]] || {
+        logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection..."
+        tries=$((${tries}+1))
         sleep 5
     }
 done
 
-#-------------------------------------------------------------------------------
-# establish reverse tunnel
-[[ ${tries} -gt ${MAXTRIES} ]] || [[ ! "${conn}" ]] && {
+[[ ${tries} -gt 5 ]] || [[ ! "${conn}" ]] && {
     logger -t revpipe "reverse tunnel is down. restarting..."
-    conn_pid="$(ps axo pid,cmd | grep "localhost:${PORT}:localhost:22" | grep -v grep | awk '{ print $1 }')"
-    [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
-    ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} && {
-        logger -t revpipe "reverse tunnel to ${RESOLVED_IP} activated"
+    conn_pid=$(ps ax | grep localhost:${PORT} | grep -v grep | head -n1 | awk '{ print $1 }')
+    [[ ${conn_pid} ]] && kill ${conn_pid}
+    ssh  -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${HOME_ADDR} && {
+        logger -t revpipe "reverse tunnel activated"
     } || {
-        logger -t revpipe "restarting reverse tunnel FAILED."
+        logger -t revpipe "restarting reverse tunnel failed"
     }
 }
 #-------------------------------------------------------------------------------
@@ -166,12 +86,9 @@ Setup @ work
  without a password, using ssh keys from work into your home pc.
 
  To get your keys setup:
-
   youasroot@work~# ssh-copy-id -i <pubkeyfile> root@your_house
-
  where <pubkeyfile> is typically either of:
-
-  ~/.ssh/id_dsa.pub or ~/.ssh/id_rsa.pub
+ ~/.ssh/id_dsa.pub or ~/.ssh/id_rsa.pub
 
  Note:
  revpipe must be run as root on your work box, and should be run
@@ -190,23 +107,6 @@ Setup @ work
  The crontab above  will check the connection on reboot, and
  every 5 minutes thereafter while your work box is running.
  If the test fails 5 times, it will recreate the tunnel.
-
-
-Advanced Work-side Configuration Options
----------------------------------------------------------------------
- If you want to use a faster but less secure cipher, such as arcfour
- or blowfish, you'll need to setup a Host section in your
- ~/.ssh/config file. Create the file if it does not already exist.
-
- Example ~/.ssh/config Host section
-
-   Host work-home-tunnel
-       Ciphers arcfour,arcfour128,arcfour256,blowfish-cbc
-       BatchMode yes
-       Compression yes
-
- Then, set HOST=work-home-tunnel in the configuration
- section of revpipe
 
 
 Setup @ home
@@ -247,11 +147,11 @@ Using the Tunnel
   ServerAliveCountMax
   ServerAliveInterval
 
- Use 'apropos ssh' for a list of related ssh manpages. ssh_config is a
- good manpage to read.  If the tunnel is isolated by firewalls by IP
- addresses, you might consider a less robust tunnel cipher to improve
- performance, like possibly arcfour. Use root's ~/.ssh/config to
- modify the cipher for this connection only. See Advanced Work-side
- Configuration Options above for more information.
+ Use 'apropos ssh' for a list of related ssh manpages. ssh_config is
+ a good manpage to read.
+ If the tunnel is isolated by firewalls by IP addresses, you might
+ consider a less robust tunnel cipher to improve performance, like
+ possibly arcfour. Use root's .ssh_config to modify the cipher for
+ this connection only.
 
 DOC
