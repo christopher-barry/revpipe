@@ -17,6 +17,9 @@ PORT=2222
 # set the following to the Host name you set in that file.
 # HOST=home-work-tunnel
 
+# max number of tries verifying the remote host
+MAXTRIES=5
+
 # That's it.
 
 #-------------------------------------------------------------------------------
@@ -44,48 +47,76 @@ function _get_configured_nameserver()
 # handle ip changes in public dns
 function _iterate_nameservers()
 {
-    [[ "${HOME_ADDR}" =~ [a-zA-Z] ]] && {
+    [[ "${HOME_ADDR}" =~ [[:alpha:]] ]] && {
+
         # we're using a dns name
         # we'll query a bunch of public dns servers to see if the remote ip has changed.
         # this can help as the record propagates after changing the ip.
-        local -a nameservers=( $(_get_configured_nameserver) 208.67.222.220 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 207.225.209.66 )
+        local -a nameservers=( $(_get_configured_nameserver) 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 207.225.209.66 )
         RESOLVED_IPS=()
         for (( n=0; n < ${#nameservers[@]}; n++ )); do
-            RESOLVED_IPS+=( $(resolve2ip ${HOME_ADDR} ${nameservers[${n}]}) )
+            RESOLVED_IPS+=( $(_resolve2ip ${HOME_ADDR} ${nameservers[${n}]}) )
         done
+
         RESOLVED_IPS=( $(echo "${RESOLVED_IPS[@]}" | uniq) )
+
     } || {
+
         # here we just have an ip configured instead of a dns name.
         # if it changes on us, we're basically out of luck.
         RESOLVED_IPS=( ${HOME_ADDR} )
+
     }
+
+    [[ ${#RESOLVED_IPS[@]} -gt 0 ]] || {
+    logger -t revpipe "unable to connect to '${HOME_ADDR}'"
+    exit 1
+    }
+
 }
 
 #-------------------------------------------------------------------------------
 # test remote connectivity
 _iterate_nameservers
 for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
-    tries=1 conn=
-    until [[ ${conn} ]] || [[ ${tries} -gt 5 ]]; do
-        conn="$(ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o \'Host ${HOST}\'} ${RESOLVED_IPS[${ip}]} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]]'")"
-        [[ ${conn} ]] && {
-            RESOLVED_IP=${RESOLVED_IPS[${ip}]}
-            ip=${#RESOLVED_IPS[@]}
-        } || {
-            logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IPS[${ip}]}..."
-            tries=$((${tries}+1))
-            sleep 5
+    conn=$(ssh root@${RESOLVED_IPS[${i}]} "ls /")
+    [[ ${?} -eq 0 && "${conn}" =~ usr ]] && {
+        RESOLVED_IP=${RESOLVED_IPS[${i}]}
+        ip=${#RESOLVED_IPS[@]}
+    }
+done
+[[ ${RESOLVED_IP} ]] || {
+    logger -t revpipe "unable to connect to '${HOME_ADDR}'"
+    exit 1
+}
+
+#-------------------------------------------------------------------------------
+# see if the tunnel looks up
+tries=1 conn=
+until [[ ${conn} ]] || [[ ${tries} -gt ${MAXTRIES} ]]; do
+    conn="$(ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'")"
+    [[ ${conn} ]] && {
+        # see if we can double back
+        [[ "$(ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} ${RESOLVED_IP} "ssh -p${PORT} localhost \"ls /\"")" =~ usr ]] || {
+            # if not, kill the tunnel client-side
+            ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o \'Host ${HOST}\'} ${RESOLVED_IP} \
+                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")"
+            tries=$((${MAXTRIES} + 1))
         }
-    done
+    } || {
+        logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP}..."
+        tries=$((${tries} + 1))
+        sleep 5
+    }
 done
 
 #-------------------------------------------------------------------------------
 # establish reverse tunnel
-[[ ${tries} -gt 5 ]] || [[ ! "${conn}" ]] && {
+[[ ${tries} -gt ${MAXTRIES} ]] || [[ ! "${conn}" ]] && {
     logger -t revpipe "reverse tunnel is down. restarting..."
-    conn_pid=$(ps ax | grep localhost:${PORT} | grep -v grep | head -n1 | awk '{ print $1 }')
-    [[ ${conn_pid} ]] && kill ${conn_pid}
-    ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o \'Host ${HOST}\'} -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} && {
+    conn_pid="$(ps axo pid,cmd | grep "localhost:${PORT}:localhost:22" | grep -v grep | awk '{ print $1 }')"
+    [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
+    ssh -o 'StrictHostKeyChecking no' ${HOST:+ -o Host ${HOST}} -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} && {
         logger -t revpipe "reverse tunnel to ${RESOLVED_IP} activated"
     } || {
         logger -t revpipe "restarting reverse tunnel FAILED."
