@@ -7,7 +7,7 @@
 #                         C O N F I G U R A T I O N
 #-------------------------------------------------------------------------------
 # Your home's external ip address, or DNS name if you have one.
-HOME_ADDR=ns.infinux.org
+HOME_ADDR=my.homepc.com
 
 # The port on your box at home to connect back to work through.
 # This default is likely fine to use.
@@ -210,7 +210,7 @@ Advanced Work-side Configuration Options
 
  Example ~/.ssh/config Host section
 
-   Host work-home-tunnel
+   Host *.yourdomain.com
        Ciphers arcfour,arcfour128,arcfour256,blowfish-cbc
        BatchMode yes
        Compression yes
