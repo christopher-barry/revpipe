@@ -34,23 +34,39 @@ MAXTRIES=5
 SCRIPT=${0##*/}
 LOG=/var/log/${SCRIPT}.log
 STDERR=/var/log/${SCRIPT}.stderr
-[[ "${SSH_DEBUG}" ]] && STDOUT=/var/log/${SCRIPT}.stdout || STDOUT=/dev/null
-export SCRIPT SSH_DEBUG LOG STDERR
+[[ "${SSH_DEBUG}" ]] && {
+    STDOUT=/var/log/${SCRIPT}.stdout
+} || {
+    STDOUT=/dev/null
+}
+export SCRIPT SSH_DEBUG LOG STDOUT STDERR
 
 [[ "$(id -u)" == 0 ]] || { echo "you must be root"; exit 1; }
 
-logger() { echo "$(date) ${SCRIPT}: ${*}" >>${LOG}; }
-std_out() { local out= so=${STDOUT}; [[ "${1}" == "-t" ]] && OUT='tee' || OUT='cat -' ; echo >>${so}; date >>${so}; ${OUT} >>${so}; }
-std_err() { local se=${STDERR}; echo >>${se}; date >>${se}; cat - >>${se}; }
-
+# logging methods
+log()
+{
+    # be return code transparent
+    local _rtn=${?}
+    local _msg=
+    local _log=
+    case "${1}" in
+        "-err") _msg="$(cat -)"; _log=${STDERR} ;;
+        "-out") _msg="$(cat -)"; _log=${STDOUT} ;;
+        *) _msg="${*}"; _log=${LOG} ;;
+    esac
+    while IFS= read line; do
+        echo "$(date) ${SCRIPT}: ${line}" >>${_log}
+    done < <(echo "${_msg}")
+    return ${_rtn}
+}
 
 [[ $(which dig) ]] || {
-    logger "this program requires 'dig' to function. Please install it"
+    log "this program requires 'dig' to function. Please install it"
     echo "dig is required. please install it"
     exit 1
 }
 
-#-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 function _resolve2ip()
@@ -72,12 +88,15 @@ function _get_configured_nameserver()
 function _iterate_nameservers()
 {
 
+    # modify these if required / desired
+    local public_dns_servers=( 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 )
+
     [[ "${HOME_ADDR}" =~ [[:alpha:]] ]] && {
 
         # we're using a dns name
         # we'll query a bunch of public dns servers to see if the remote ip has changed.
         # this can help as the record propagates after changing the ip.
-        local -a nameservers=( $(_get_configured_nameserver) 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 )
+        local -a nameservers=( $(_get_configured_nameserver) ${public_dns_servers[@]} )
         RESOLVED_IPS=()
         for (( n=0; n < ${#nameservers[@]}; n++ )); do
             RESOLVED_IPS+=( $(_resolve2ip ${HOME_ADDR} ${nameservers[${n}]}) )
@@ -94,7 +113,7 @@ function _iterate_nameservers()
     }
 
     [[ ${#RESOLVED_IPS[@]} -gt 0 ]] || {
-    logger "unable to connect to '${HOME_ADDR}'"
+    log "unable to connect to '${HOME_ADDR}'"
     exit 1
     }
 
@@ -109,7 +128,7 @@ for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
 
     conn=$(ssh ${SSH_DEBUG} root@${RESOLVED_IPS[${i}]} "ls / | grep usr" 2> >(debug))
 
-    [[ ${?} -eq 0 && "${conn}" =~ usr ]] && {
+    [[ ${?} -errq 0 && "${conn}" =~ usr ]] && {
         RESOLVED_IP=${RESOLVED_IPS[${i}]}
         export RESOLVED_IP
         ip=${#RESOLVED_IPS[@]}
@@ -118,7 +137,7 @@ for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
 done
 
 [[ ${RESOLVED_IP} ]] || {
-    logger "unable to connect to '${HOME_ADDR}'"
+    log "unable to connect to '${HOME_ADDR}'"
     exit 1
 }
 
@@ -127,26 +146,26 @@ done
 tries=1 conn=
 until [[ ${conn} ]] || [[ ${tries} -gt ${MAXTRIES} ]]; do
 
-    conn="$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'" 2> >(date >>${STDERR};cat - >>${STDERR}))"
+    conn="$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'" 2> >(log -err) | tee >(log -out))"
 
     [[ ${conn} ]] && {
 
         # see if we can double back. your home's root keys need to be in work's /root/.ssh/authorized_keys
-        # going out error log will be on server, double back error log will be on client
-        [[ "$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh ${SSH_DEBUG} -p${PORT} localhost 'ls / | grep usr 2> >(date >>${STDERR};cat - >>${STDERR})'" 2> >(date >>${STDERR};cat - >>${STDERR}))" =~ usr ]] && {
+        [[ "$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh ${SSH_DEBUG} -p${PORT} localhost '$(typeset -f log);ls / | grep usr 2> >(log -err) | tee >(log -out)'" 2> >(log -err) | tee >(log -out))" =~ usr ]] && {
 
-            logger '__MARK__'
+            log '__MARK__'
 
         } || {
 
-            # if not, kill the tunnel client-side, and we'll restart it
+            # if not, kill the tunnel client-outide, and we'll restart it
             ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no'  ${RESOLVED_IP} \
-                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")" 2> >(date >>${STDERR};cat - >>${STDERR})
+                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")" 2> >(log -err) | tee >(log -out)
             tries=$((${MAXTRIES} + 1))
         }
 
     } || {
-        logger "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP}..."
+
+        log "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP} (${HOME_ADDR})..."
         tries=$((${tries} + 1))
         sleep 5
     }
@@ -159,11 +178,11 @@ done
     conn_pid="$(ps axo pid,cmd | grep "localhost:${PORT}:localhost:22" | grep -v grep | awk '{ print $1 }')"
     [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
 
-    logger "reverse tunnel is down. restarting..."
-    ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(date >>${STDERR};cat - >>${STDERR}) && {
-        logger "reverse tunnel to ${RESOLVED_IP} activated"
+    log "reverse tunnel is down. restarting..."
+    ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(log -err) | tee >(log -out) && {
+        log "reverse tunnel to ${RESOLVED_IP} activated"
     } || {
-        logger "restarting reverse tunnel FAILED."
+        log "restarting reverse tunnel FAILED."
     }
 }
 #-------------------------------------------------------------------------------
@@ -179,7 +198,7 @@ Problem:
 
 Solution:
  This script will generate a reverse ssh tunnel from work to home
- and make sure it stays up, re-establishing it whenever it drops.
+ and make sure it stays up, re-errstablishing it whenever it drops.
 
 
 Setup @ work
