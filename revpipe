@@ -6,12 +6,14 @@
 #-------------------------------------------------------------------------------
 #                         C O N F I G U R A T I O N
 #-------------------------------------------------------------------------------
-# Your home's external ip address, or DNS name if you have one.
-HOME_ADDR=ns.infinux.org
+# Your home's external ip address, or DNS name if you have one. Having a dns
+# name rather than just an IP here gives you a LOT more flexibility. Get one.
+HOME_ADDR=my.homepc.com
 
 # The port on your box at home to connect back to work through.
 # This default is likely fine to use.
 PORT=2222
+export PORT
 
 # max number of tries verifying the remote host per cron cycle
 MAXTRIES=5
@@ -19,10 +21,36 @@ MAXTRIES=5
 # That's it.
 
 #-------------------------------------------------------------------------------
+#                           D E B U G G I N G
+# uncomment SSH_DEBUG below to log and help diagnose ssh connection issues.
+# connection info written to /var/log/revpipe.stderr by default.
+#SSH_DEBUG='-vv'
+#-------------------------------------------------------------------------------
+
+
+#-------------------------------------------------------------------------------
 #                        P R O G R A M   B E G I N S
 #-------------------------------------------------------------------------------
+SCRIPT=${0##*/}
+LOG=/var/log/${SCRIPT}.log
+STDERR=/var/log/${SCRIPT}.stderr
+[[ "${SSH_DEBUG}" ]] && STDOUT=/var/log/${SCRIPT}.stdout || STDOUT=/dev/null
+export SCRIPT SSH_DEBUG LOG STDERR
+
 [[ "$(id -u)" == 0 ]] || { echo "you must be root"; exit 1; }
-[[ $(which logger) ]] || logger() { echo "$(date) ${@:1:1}: ${@:2}" >>/var/log/revpipe.log; }
+
+logger() { echo "$(date) ${SCRIPT}: ${*}" >>${LOG}; }
+std_out() { local out= so=${STDOUT}; [[ "${1}" == "-t" ]] && OUT='tee' || OUT='cat -' ; echo >>${so}; date >>${so}; ${OUT} >>${so}; }
+std_err() { local se=${STDERR}; echo >>${se}; date >>${se}; cat - >>${se}; }
+
+
+[[ $(which dig) ]] || {
+    logger "this program requires 'dig' to function. Please install it"
+    echo "dig is required. please install it"
+    exit 1
+}
+
+#-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 function _resolve2ip()
@@ -43,6 +71,7 @@ function _get_configured_nameserver()
 # handle ip changes in public dns
 function _iterate_nameservers()
 {
+
     [[ "${HOME_ADDR}" =~ [[:alpha:]] ]] && {
 
         # we're using a dns name
@@ -65,7 +94,7 @@ function _iterate_nameservers()
     }
 
     [[ ${#RESOLVED_IPS[@]} -gt 0 ]] || {
-    logger -t revpipe "unable to connect to '${HOME_ADDR}'"
+    logger "unable to connect to '${HOME_ADDR}'"
     exit 1
     }
 
@@ -74,19 +103,22 @@ function _iterate_nameservers()
 #-------------------------------------------------------------------------------
 # test remote connectivity
 _iterate_nameservers
+
+unset RESOLVED_IP
 for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
 
-    conn=$(ssh root@${RESOLVED_IPS[${i}]} "ls /")
+    conn=$(ssh ${SSH_DEBUG} root@${RESOLVED_IPS[${i}]} "ls / | grep usr" 2> >(debug))
 
     [[ ${?} -eq 0 && "${conn}" =~ usr ]] && {
         RESOLVED_IP=${RESOLVED_IPS[${i}]}
+        export RESOLVED_IP
         ip=${#RESOLVED_IPS[@]}
     }
 
 done
 
 [[ ${RESOLVED_IP} ]] || {
-    logger -t revpipe "unable to connect to '${HOME_ADDR}A'"
+    logger "unable to connect to '${HOME_ADDR}'"
     exit 1
 }
 
@@ -95,41 +127,43 @@ done
 tries=1 conn=
 until [[ ${conn} ]] || [[ ${tries} -gt ${MAXTRIES} ]]; do
 
-    conn="$(ssh -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'")"
+    conn="$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "netstat -ln --inet|grep '[[:blank:]]127\.0\.0\.1:${PORT}[[:blank:]].*LISTEN[[:blank:]]*$'" 2> >(date >>${STDERR};cat - >>${STDERR}))"
 
     [[ ${conn} ]] && {
 
-        # see if we can double back
-        export RESOLVED_IP PORT
-        [[ "$(ssh -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh -p${PORT} localhost \"ls /\"")" =~ usr ]] && {
+        # see if we can double back. your home's root keys need to be in work's /root/.ssh/authorized_keys
+        # going out error log will be on server, double back error log will be on client
+        [[ "$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh ${SSH_DEBUG} -p${PORT} localhost 'ls / | grep usr 2> >(date >>${STDERR};cat - >>${STDERR})'" 2> >(date >>${STDERR};cat - >>${STDERR}))" =~ usr ]] && {
 
-            logger -t revpipe '__MARK__'
+            logger '__MARK__'
 
         } || {
 
-            # if not, kill the tunnel client-side
-            ssh -o 'StrictHostKeyChecking no'  ${RESOLVED_IP} \
-                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")"
+            # if not, kill the tunnel client-side, and we'll restart it
+            ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no'  ${RESOLVED_IP} \
+                "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")" 2> >(date >>${STDERR};cat - >>${STDERR})
             tries=$((${MAXTRIES} + 1))
         }
 
     } || {
-        logger -t revpipe "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP}..."
+        logger "Attempt [${tries}] at verifying the reverse tunnel connection to ${RESOLVED_IP}..."
         tries=$((${tries} + 1))
         sleep 5
     }
 done
 
 #-------------------------------------------------------------------------------
-# establish reverse tunnel
+# (re)establish reverse tunnel if needed
 [[ ${tries} -gt ${MAXTRIES} ]] || [[ ! "${conn}" ]] && {
-    logger -t revpipe "reverse tunnel is down. restarting..."
+    # force kill the local endpoint if it exists
     conn_pid="$(ps axo pid,cmd | grep "localhost:${PORT}:localhost:22" | grep -v grep | awk '{ print $1 }')"
     [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
-    ssh -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} && {
-        logger -t revpipe "reverse tunnel to ${RESOLVED_IP} activated"
+
+    logger "reverse tunnel is down. restarting..."
+    ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(date >>${STDERR};cat - >>${STDERR}) && {
+        logger "reverse tunnel to ${RESOLVED_IP} activated"
     } || {
-        logger -t revpipe "restarting reverse tunnel FAILED."
+        logger "restarting reverse tunnel FAILED."
     }
 }
 #-------------------------------------------------------------------------------
@@ -141,7 +175,7 @@ Overview:
 
 Problem:
  Your work box sits behind a NAT in the office, and you want/need to
- access it from home whenever you need to via ssh or scp.
+ access it from home whenever you need to via ssh, scp or nx.
 
 Solution:
  This script will generate a reverse ssh tunnel from work to home
@@ -252,6 +286,15 @@ Using the Tunnel
  copy files to your work desktop:
 
   you@home$ scp -P2222 /my/local/file workyou@localhost:~/Desktop/
+
+ NX server, from nomachine (www.nomachine.com), works great to deliver
+ a full graphical desktop experience over this reverse tunnel. To use
+ it, setup nxserver on your work box, and use nxclient on your home
+ machine. In the client configuration, set your target to be
+ localhost, on the port you specified above. I'm writing this on my
+ work desktop from home. It spans two monitors fullscreen, and it
+ feels almost as fast as being there. Try it - it blows vnc away.
+
 
  Some other ssh settings to read up on:
   ServerAliveCountMax
