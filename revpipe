@@ -244,7 +244,7 @@ Advanced Work-side Configuration Options
 
  Example ~/.ssh/config Host section
 
-   Host work-home-tunnel
+   Host *.yourdomain.com
        Ciphers arcfour,arcfour128,arcfour256,blowfish-cbc
        BatchMode yes
        Compression yes
