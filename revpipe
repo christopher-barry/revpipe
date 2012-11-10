@@ -20,6 +20,9 @@ MAXTRIES=5
 
 # That's it.
 
+# modify these if required / desired
+PUBLIC_DNS_SERVERS=( 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 )
+
 #-------------------------------------------------------------------------------
 #                           D E B U G G I N G
 # uncomment SSH_DEBUG below to log and help diagnose ssh connection issues.
@@ -46,18 +49,23 @@ export SCRIPT SSH_DEBUG LOG STDOUT STDERR
 # logging methods
 log()
 {
-    # be return code transparent
+    # be transparent to return code
     local _rtn=${?}
     local _msg=
     local _log=
+
     case "${1}" in
         "-err") _msg="$(cat -)"; _log=${STDERR} ;;
         "-out") _msg="$(cat -)"; _log=${STDOUT} ;;
         *) _msg="${*}"; _log=${LOG} ;;
     esac
+
     while IFS= read line; do
-        echo "$(date) ${SCRIPT}: ${line}" >>${_log}
+        [[ "${line}" ]] && {
+            echo "$(date) ${SCRIPT}: ${line}" >>${_log}
+        }
     done < <(echo "${_msg}")
+
     return ${_rtn}
 }
 
@@ -88,15 +96,12 @@ function _get_configured_nameserver()
 function _iterate_nameservers()
 {
 
-    # modify these if required / desired
-    local public_dns_servers=( 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 )
-
     [[ "${HOME_ADDR}" =~ [[:alpha:]] ]] && {
 
         # we're using a dns name
         # we'll query a bunch of public dns servers to see if the remote ip has changed.
         # this can help as the record propagates after changing the ip.
-        local -a nameservers=( $(_get_configured_nameserver) ${public_dns_servers[@]} )
+        local -a nameservers=( $(_get_configured_nameserver) ${PUBLIC_DNS_SERVERS[@]} )
         RESOLVED_IPS=()
         for (( n=0; n < ${#nameservers[@]}; n++ )); do
             RESOLVED_IPS+=( $(_resolve2ip ${HOME_ADDR} ${nameservers[${n}]}) )
@@ -126,9 +131,9 @@ _iterate_nameservers
 unset RESOLVED_IP
 for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
 
-    conn=$(ssh ${SSH_DEBUG} root@${RESOLVED_IPS[${i}]} "ls / | grep usr" 2> >(debug))
+    conn=$(ssh ${SSH_DEBUG} root@${RESOLVED_IPS[${i}]} "ls / | grep usr" 2> >(log -err) | tee >(log -out))
 
-    [[ ${?} -errq 0 && "${conn}" =~ usr ]] && {
+    [[ ${?} -eq 0 && "${conn}" =~ usr ]] && {
         RESOLVED_IP=${RESOLVED_IPS[${i}]}
         export RESOLVED_IP
         ip=${#RESOLVED_IPS[@]}
@@ -151,14 +156,14 @@ until [[ ${conn} ]] || [[ ${tries} -gt ${MAXTRIES} ]]; do
     [[ ${conn} ]] && {
 
         # see if we can double back. your home's root keys need to be in work's /root/.ssh/authorized_keys
-        [[ "$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh ${SSH_DEBUG} -p${PORT} localhost '$(typeset -f log);ls / | grep usr 2> >(log -err) | tee >(log -out)'" 2> >(log -err) | tee >(log -out))" =~ usr ]] && {
+        [[ "$(ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} "ssh ${SSH_DEBUG} -p${PORT} localhost 'ls / | grep usr'" 2> >(log -err) | tee >(log -out))" =~ usr ]] && {
 
             log '__MARK__'
 
         } || {
 
             # if not, kill the tunnel client-outide, and we'll restart it
-            ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no'  ${RESOLVED_IP} \
+            ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' ${RESOLVED_IP} \
                 "conn_pid=\$(netstat -lnpa --inet | grep '127\.0\.0\.1:${PORT}' | grep sshd | awk '{ print \$7 }' | awk -F/ '{ print \$1 }' | uniq); [[ \${conn_pid} ]] && kill \$(echo -n "\${conn_pid}")" 2> >(log -err) | tee >(log -out)
             tries=$((${MAXTRIES} + 1))
         }
@@ -179,8 +184,8 @@ done
     [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
 
     log "reverse tunnel is down. restarting..."
-    ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(log -err) | tee >(log -out) && {
-        log "reverse tunnel to ${RESOLVED_IP} activated"
+    ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(log -err) && {
+        log "reverse tunnel to ${RESOLVED_IP} (${HOME_ADDR}) activated"
     } || {
         log "restarting reverse tunnel FAILED."
     }
@@ -193,12 +198,13 @@ Overview:
  from one location to another.
 
 Problem:
- Your work box sits behind a NAT in the office, and you want/need to
- access it from home whenever you need to via ssh, scp or nx.
+ Your work box sits behind a NAT router in the office, and you
+ want/need to access it from home whenever you need to via ssh, scp or
+ nx.
 
 Solution:
  This script will generate a reverse ssh tunnel from work to home
- and make sure it stays up, re-errstablishing it whenever it drops.
+ and make sure it stays up, re-establishing it whenever it drops.
 
 
 Setup @ work
