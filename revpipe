@@ -26,7 +26,7 @@ PUBLIC_DNS_SERVERS=( 208.67.222.220 8.8.8.8 156.154.70.1 198.153.192.1 4.2.2.1 )
 #-------------------------------------------------------------------------------
 #                           D E B U G G I N G
 # uncomment SSH_DEBUG below to log and help diagnose ssh connection issues.
-# connection info written to /var/log/revpipe.stderr by default.
+# connection info written to /var/log/revpipe/revpipe.stderr by default.
 #SSH_DEBUG='-vv'
 #-------------------------------------------------------------------------------
 
@@ -43,6 +43,11 @@ STDOUT_LOG=${LOG_ROOT}/${SCRIPT}/${SCRIPT}.stdout
 STDERR_LOG=${LOG_ROOT}/${SCRIPT}/${SCRIPT}.stderr
 DEBUG_LOG=${LOG_ROOT}/${SCRIPT}/${SCRIPT}.debug
 ERROR_EMAIL=root
+#ERROR_EMAIL_IGNORE_REGEX='^.*something$|^something else'
+ERROR_EMAIL_IGNORE_REGEX=
+REDIRECT_STDERR=
+DO_DEBUG=
+LOG_ARCHIVES=7
 
 function log()
 {
@@ -57,7 +62,9 @@ function log()
         "-err")
             _msg="$(cat -)"; _pre="Error: "; _log=${STDERR_LOG:-~/${0##*/}.stderr}
             [[ "${_msg}" ]] && {
-                echo "${_msg}" | mail -s"[${0##*/}] Error on ${HOSTNAME}" ${ERROR_EMAIL:-${USER}}
+                [[ "$(echo "${_msg}"|egrep -w "${ERROR_EMAIL_IGNORE_REGEX}")" ]] || {
+                    echo "${_msg}" | mail -s"[${0##*/}] Error on ${HOSTNAME}" ${ERROR_EMAIL:-${USER}}
+                }
             }
             ;;
 
@@ -88,17 +95,53 @@ function log()
 #
 function error()
 {
-    echo -e "${*}" > >(log -err)
+    echo -e "${*}\n" > >(log -err)
 }
 #
 function debug()
 {
-    echo -e "${*}" > >(log -dbg)
+    [[ ${DO_DEBUG} ]] || return 0
+    echo -e "${*}\n" > >(log -dbg)
 }
-# push all stderr from any failure to the error log
-exec 2> >(log -err)
-#-------------------------------------------------------------------------------
+#
+function email_logs()
+{
+    local -a log_files=( $(find ${LOG_ROOT:-~}/${SCRIPT:-${0##*/}} -type f -name "${SCRIPT:-${0##*/}}.*") )
+    cat "${log_files[@]}" | mail -s"[${SCRIPT:-${0##*/}}] Session Logs" ${ERROR_EMAIL:-${USER}}
+}
+#
+function rotate_logs()
+{
+    local -a log_archives=()
+    local -a log_files=()
+    local log_dir=${LOG_ROOT:-~}/${SCRIPT:-${0##*/}}
+    local log_name=${SCRIPT:-${0##*/}}
+    local log_fn=${log_dir}/${log_name}
 
+    mkdir -p ${log_dir}
+    log_archives=( $(find -regextype egrep -regex "${log_fn}-[[:digit:]]+.tgz") )
+    # trim extra log archives
+    if [[ ${#log_archives[@]} -gt ${LOG_ARCHIVES:-7} ]]; then
+        rm -f "${log_archives[@]:${LOG_ARCHIVES:-7}}"
+    fi
+    # rotate log archives
+    for (( i=$(( ${LOG_ARCHIVES:-7} - 1 )); i>0; i-- )); do
+        [[ -f ${log_fn}-${i}.tgz ]] && {
+            mv ${log_fn}-${i}.tgz ${log_fn}-$(( ${i} + 1 )).tgz
+        }
+    done
+    # archive latest logs
+    log_files=( $(find ${log_dir} -type f -name "${log_name}.*") )
+    [[ ${#log_files[@]} -gt 0 ]] && {
+        tar --remove-files -czf ${log_fn}-1.tgz "${log_files[@]}" 2>/dev/null
+    }
+}
+# push all error messages from any failure to the log
+[[ ${REDIRECT_STDERR} ]] && {
+    exec 2> >(log -err)
+}
+
+#-------------------------------------------------------------------------------
 [[ "$(id -u)" == 0 ]] || { echo "you must be root"; exit 1; }
 
 [[ $(which dig) ]] || {
