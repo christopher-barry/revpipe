@@ -3,8 +3,9 @@ Overview:
  from one location to another.
 
 Problem:
- Your work box sits behind a NAT in the office, and you want/need to
- access it from home whenever you need to via ssh or scp.
+ Your work box sits behind a NAT router in the office, and you
+ want/need to access it from home whenever you need to via ssh, scp or
+ nx.
 
 Solution:
  This script will generate a reverse ssh tunnel from work to home
@@ -56,30 +57,28 @@ Setup @ work
  @reboot             /path/to/revpipe 2>&1 >/dev/null
  */5  *  *   *   *   /path/to/revpipe 2>&1 >/dev/null
 
+
   youasroot@work~# crontab -e
 
  Use above command to edit root's crontab.
 
- The crontab above  will check the connection on reboot, and
- every 5 minutes thereafter while your work box is running.
- If the test fails 5 times, it will recreate the tunnel.
+ The crontab above will check the connection on reboot, and every 5
+ minutes thereafter while your work box is running.  If the connection
+ test fails 5 times during a cron cycle, it will recreate the tunnel.
 
 
 Advanced Work-side Configuration Options
 ---------------------------------------------------------------------
- If you want to use a faster but less secure cipher, such as arcfour
- or blowfish, you'll need to setup a Host section in your
+ If you want to use a faster but less secure tunnel cipher, such as
+ arcfour or blowfish, you'll need to setup a Host section in your
  ~/.ssh/config file. Create the file if it does not already exist.
 
  Example ~/.ssh/config Host section
 
-   Host work-home-tunnel
+   Host <my.homepc.com OR my_home_ip_address>
        Ciphers arcfour,arcfour128,arcfour256,blowfish-cbc
        BatchMode yes
        Compression yes
-
- Then, set HOST=work-home-tunnel in the configuration
- section of revpipe
 
 
 Setup @ home
@@ -92,7 +91,7 @@ Setup @ home
  PermitRootLogin yes
 
  It's a VERY good idea, AFTER you have keys working from work to
- DISABLE password authentication in /etc/ssh/sshd_config on your
+ disable password authentication in /etc/ssh/sshd_config on your
  home desktop, as in:
 
  PasswordAuthentication no
@@ -116,14 +115,30 @@ Using the Tunnel
 
   you@home$ scp -P2222 /my/local/file workyou@localhost:~/Desktop/
 
+ NX server, from nomachine (www.nomachine.com), works great to deliver
+ a full graphical desktop experience over this reverse tunnel. To use
+ it, setup nxserver on your work box and use nxclient on your home
+ machine. In the client configuration, set your target to be
+ localhost, on the port you specified above. I'm writing this on my
+ work desktop from home. It spans two monitors fullscreen, and it
+ feels almost as fast as being there. Try it - it blows vnc away.
+
+
+Other stuff
+---------------------------------------------------------------------
+
  Some other ssh settings to read up on:
   ServerAliveCountMax
   ServerAliveInterval
 
  Use 'apropos ssh' for a list of related ssh manpages. ssh_config is a
- good manpage to read.  If the tunnel is isolated by firewalls by IP
- addresses, you might consider a less robust tunnel cipher to improve
- performance, like possibly arcfour. Use root's ~/.ssh/config to
- modify the cipher for this connection only. See Advanced Work-side
- Configuration Options above for more information.
+ good manpage to read.  If the tunnel is isolated by your firewall by
+ IP addresses, you might consider a less robust tunnel cipher to
+ improve performance, like arcfour. Use root's ~/.ssh/config to modify
+ the cipher for this connection only.
+
+ See Advanced Work-side Configuration Options above for more
+ information. This cipher will only affect the tunnel, your sessions
+ back through the tunnel are still encrypted using your default
+ cipher.
 
