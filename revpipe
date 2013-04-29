@@ -46,6 +46,7 @@ ERROR_EMAIL=root
 #ERROR_EMAIL_IGNORE_REGEX='^.*something$|^something else'
 ERROR_EMAIL_IGNORE_REGEX=
 REDIRECT_STDERR=
+# additional debugging info. set to 1 to enable.
 DO_DEBUG=
 LOG_ARCHIVES=7
 
@@ -192,7 +193,7 @@ function _iterate_nameservers()
     }
 
     [[ ${#RESOLVED_IPS[@]} -gt 0 ]] || {
-        log "unable to connect to '${HOME_ADDR}'. Aborting."
+        log "[${FUNCNAME}] unable to connect to '${HOME_ADDR}'. Aborting."
         exit 1
     }
 
@@ -216,7 +217,7 @@ for (( ip=0; ip < ${#RESOLVED_IPS[@]}; ip++ )); do
 done
 
 [[ ${RESOLVED_IP} ]] || {
-    log "unable to connect to '${HOME_ADDR}'. Aborting"
+    log "[${FUNCNAME}] unable to connect to '${HOME_ADDR}'. Aborting"
     exit 1
 }
 
@@ -254,8 +255,8 @@ done
 # (re)establish reverse tunnel if needed
 [[ ${tries} -gt ${MAXTRIES} ]] || [[ ! "${conn}" ]] && {
     # force kill the local endpoint if it exists
-    conn_pid="$(ps axo pid,cmd | grep "localhost:${PORT}:localhost:22" | grep -v grep | awk '{ print $1 }')"
-    [[ ${conn_pid} ]] && kill $(echo -n "${conn_pid}")
+    conn_pids=( $(pgrep -f "ssh -o StrictHostKeyChecking no -fgNTR localhost:2222:localhost:22 root@${RESOLVED_IP}") )
+    [[ ${#conn_pids[@]} -gt 0 ]] && kill ${conn_pids[@]}
 
     log "reverse tunnel is down. restarting..."
     ssh ${SSH_DEBUG} -o 'StrictHostKeyChecking no' -fgNTR localhost:${PORT}:localhost:22 root@${RESOLVED_IP} 2> >(log -err) && {
