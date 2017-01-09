@@ -297,7 +297,7 @@ Setup @ work
   Here's a handy one-liner to run from a pc (e.g. your home desktop)
   to get your current external IP address:
 
-  $ wget http://automation.whatismyip.com/n09230945.asp -O - -o /dev/null
+  $ wget -q -O http://myexternalip.com/raw
 
   Save the line above to ~/bin/getip, and chmod it to 755.
   Then you can use 'getip' whenever you need to grab your ip.
